@@ -1,0 +1,46 @@
+name: Release Blender Extension
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get tag version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create extension directory structure
+        run: |
+          mkdir -p mhtri_collision_editor
+          cp __init__.py mhtri_collision_editor/
+          cp blender_manifest.toml mhtri_collision_editor/
+          # Add any other files your extension needs (README, etc.)
+          if [ -f README.md ]; then
+            cp README.md mhtri_collision_editor/
+          fi
+
+      - name: Update version in manifest
+        run: |
+          sed -i 's/version = ".*"/version = "${{ steps.get_version.outputs.VERSION }}"/' mhtri_collision_editor/blender_manifest.toml
+
+      - name: Create ZIP archive
+        run: |
+          zip -r mhtri_collision_editor-${{ steps.get_version.outputs.VERSION }}.zip mhtri_collision_editor/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: mhtri_collision_editor-${{ steps.get_version.outputs.VERSION }}.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
