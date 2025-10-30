@@ -42,6 +42,11 @@ class SchFile:
     grid_cells: list[SchGridCell] 
     polygons: list[SchPolygons] 
 
+def pad_buffer_to_alignment(buffer: bytearray, alignment: int) -> bytearray:
+    padding_needed = (alignment - (len(buffer) % alignment)) % alignment
+    buffer.extend(b'\x00' * padding_needed)
+    return buffer
+
 def extract_polygons_from_file(file_path: str) -> list[SchPolygons]:
     polygons = []
     with open(file_path, 'rb') as f:
@@ -70,6 +75,31 @@ def extract_polygons_from_file(file_path: str) -> list[SchPolygons]:
             polygons.append(polygon)
     return polygons
 
+def sch_to_polygons(sch_data: bytes) -> list[SchPolygons]:
+    polygons = []
+    polygon_offset = struct.unpack('>I', sch_data[0x40:0x44])[0]
+    num_polygons = struct.unpack('>I', sch_data[0x38:0x3C])[0]
+
+    offset = polygon_offset + 8  
+    for _ in range(num_polygons):
+        data = sch_data[offset:offset + 60]
+        unpacked = struct.unpack('>BBHHH9fffff', data)
+        polygon = SchPolygons(
+            polyId=unpacked[0],
+            attrib1=unpacked[1],
+            flags=unpacked[2],
+            attrib2=unpacked[3],
+            attrib3=unpacked[4],
+            vertex1=(unpacked[5], unpacked[6], unpacked[7]),
+            vertex2=(unpacked[8], unpacked[9], unpacked[10]),
+            vertex3=(unpacked[11], unpacked[12], unpacked[13]),
+            normal=(unpacked[14], unpacked[15], unpacked[16]),
+            distance=unpacked[17]
+        )
+        polygons.append(polygon)
+        offset += 60
+
+    return polygons
 
 def polygons_to_mesh(polygons: list[SchPolygons], mesh_name: str = "CollisionMesh") -> bpy.types.Mesh:
     mesh = bpy.data.meshes.new(mesh_name)
@@ -169,7 +199,6 @@ def grid_3d_index_to_1d(coord: tuple[int, int, int], grid_resolution: tuple[int,
     y_res, z_res = grid_resolution
     return coord[0] * (y_res * z_res) + coord[1] * z_res + coord[2]
 
-
 def get_polygons_in_cell(polygons: list[SchPolygons], cell_coord: tuple[int, int, int], cell_size: tuple[float, float, float], grid_min: tuple[float, float, float]) -> list[SchPolygons]:
     cell_min = (
         grid_min[0] + cell_coord[0] * cell_size[0],
@@ -266,7 +295,6 @@ def get_polygons_in_cell(polygons: list[SchPolygons], cell_coord: tuple[int, int
         return triangle_intersects_aabb(polygon.vertex1, polygon.vertex2, polygon.vertex3, polygon.normal)
 
     return [poly for poly in polygons if polygon_in_cell(poly)]
-
 
 def mesh_to_sch_file(mesh: bpy.types.Mesh, cell_size: tuple[float, float, float]) -> SchFile:
     bounding_min, bounding_max = get_mesh_bounding_box(mesh)
@@ -376,6 +404,32 @@ def write_sch_file(sch_file: SchFile, file_path: str):
         f.write(grid_buffer)
         f.write(polygon_buffer)
 
+def schfile_to_buffer(sch_file: SchFile) -> bytearray:
+    polygon_buffer = polygons_to_bytes(sch_file.polygons)
+    grid_buffer = grid_cells_to_bytes(sch_file.grid_cells)
+    grid_offsets_buffer = bytearray()
+    for offset in sch_file.grid_cell_offsets:
+        grid_offsets_buffer.extend(struct.pack('>I', offset))
+    header_size = 64
+    final_file_size = header_size + len(grid_offsets_buffer) + len(grid_buffer) + len(polygon_buffer)
+    sch_file.header.fileSize = final_file_size
+    sch_file.header.polygon_array_offset = header_size + len(grid_offsets_buffer) + len(grid_buffer) - 4
+    
+    sch_buffer = bytearray()
+    sch_buffer.extend(sch_file.header.magic)
+    sch_buffer.extend(struct.pack('>I', sch_file.header.fileSize))
+    sch_buffer.extend(struct.pack('>fff', *sch_file.header.grid_bound_min))
+    sch_buffer.extend(struct.pack('>fff', *sch_file.header.grid_bound_max))
+    sch_buffer.extend(struct.pack('>III', *sch_file.header.grid_cell_size))
+    sch_buffer.extend(struct.pack('>III', *sch_file.header.grid_resolution))
+    sch_buffer.extend(struct.pack('>I', sch_file.header.num_polygons))
+    sch_buffer.extend(struct.pack('>I', sch_file.header.grid_array_offset))
+    sch_buffer.extend(struct.pack('>I', sch_file.header.polygon_array_offset))
+    sch_buffer.extend(grid_offsets_buffer)
+    sch_buffer.extend(grid_buffer)
+    sch_buffer.extend(polygon_buffer)
+    return sch_buffer
+
 class MHTRI_OT_ColorizeByAttribute(bpy.types.Operator):
     bl_idname = "mhtri.colorize_by_attribute"
     bl_label = "Colorize by Attribute"
@@ -460,11 +514,47 @@ class ImportCollisionFile(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
         obj = bpy.data.objects.new("MH_Tri_Collision_Object", mesh)
         context.collection.objects.link(obj)
         maya_to_blender_transform(obj)
+        return {'FINISHED'}
 
-        polygons = mesh_to_sch_polygons(mesh)
-        print(f"Re-extracted {len(polygons)} polygons from the created mesh.")
-        print(f"Polygon 0 data: {polygons[0]}")
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+    
+class ImportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
+    bl_idname = "import_scene.mhtri_collision_archive"
+    bl_label = "Import MH Tri Collision Archive"
+    bl_options = {'PRESET', 'UNDO'}
 
+    filter_glob: bpy.props.StringProperty(
+        default="*.bin",
+        options={'HIDDEN'},
+    ) # type: ignore
+
+    def extract_sch_buffer_from_archive(self, file_path: str) -> list[bytes]:
+        sch_buffers = []
+        with open(file_path, 'rb') as f:
+            file_count = struct.unpack('<I', f.read(4))[0]
+            for _ in range(file_count):
+                offset = struct.unpack('<I', f.read(4))[0]
+                size = struct.unpack('<I', f.read(4))[0]
+                current_pos = f.tell()
+                f.seek(offset)
+                sch_data = f.read(size)
+                sch_buffers.append(sch_data)
+                f.seek(current_pos)
+
+        return sch_buffers
+
+    def execute(self, context):
+        file_path = self.filepath
+        sch_buffers = self.extract_sch_buffer_from_archive(file_path)
+        for i, sch_data in enumerate(sch_buffers):
+            polygons = sch_to_polygons(sch_data)
+            print(f"Importing collision mesh {i} with {len(polygons)} polygons.")
+            mesh = polygons_to_mesh(polygons, mesh_name=f"MH_Tri_Collision_{'Wall' if i == 0 else 'Floor'}")
+            obj = bpy.data.objects.new(f"MH_Tri_Collision_{'Wall' if i == 0 else 'Floor'}", mesh)
+            context.collection.objects.link(obj)
+            maya_to_blender_transform(obj)
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -522,11 +612,92 @@ class ExportCollisionFile(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         self.report({'INFO'}, f"Exported MH Tri Collision to {file_path}")
         return {'FINISHED'}
 
+class ExportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
+    bl_idname = "export_scene.mhtri_collision_archive"
+    bl_label = "Export MH Tri Collision Archive"
+    bl_options = {'PRESET'}
+
+    filename_ext = ".bin"
+
+    filter_glob: bpy.props.StringProperty(
+        default="*.bin",
+        options={'HIDDEN'},
+    ) # type: ignore
+
+    cell_size: bpy.props.IntVectorProperty(
+        name="Cell Size",
+        description="Size of each grid cell",
+        default=(1000, 1000, 1000),
+        size=3,
+    ) # type: ignore
+
+    def get_mesh_objects(self, context):
+        items = []
+        for obj in bpy.data.objects:
+            if obj.type == 'MESH':
+                items.append((obj.name, obj.name, f"Export {obj.name}"))
+        
+        if not items:
+            items.append(('NONE', "No Mesh Objects", "No mesh objects in scene"))
+        
+        return items
+    
+    wall_object: bpy.props.EnumProperty(
+        name="Wall Mesh Object",
+        description="Select the wall mesh object to export",
+        items=get_mesh_objects,
+    ) # type: ignore
+
+    floor_object: bpy.props.EnumProperty(
+        name="Floor Mesh Object",
+        description="Select the floor mesh object to export",
+        items=get_mesh_objects,
+    ) # type: ignore
+
+    def execute(self, context):
+        file_path = self.filepath
+        
+        selected_meshes = []
+        for obj_name in [self.wall_object, self.floor_object]:
+            obj = bpy.data.objects.get(obj_name)
+            if not obj or obj.type != 'MESH':
+                self.report({'ERROR'}, f"Selected object {obj_name} is not a valid mesh.")
+                return {'CANCELLED'}
+            selected_meshes.append(obj.data)
+
+        sch_buffers = []
+        for mesh in selected_meshes:
+            sch_file = mesh_to_sch_file(mesh, tuple(self.cell_size))
+            sch_buffer = schfile_to_buffer(sch_file)
+            sch_buffer = pad_buffer_to_alignment(sch_buffer, 0x10)
+            sch_buffer.extend(b'\x00' * 32)
+            sch_buffers.append(sch_buffer)
+
+        header_buffer = bytearray()
+        header_buffer.extend(struct.pack('<I', len(sch_buffers)))
+        header_buffer.extend(struct.pack('<I', 0x40))
+        header_buffer.extend(struct.pack('<I', len(sch_buffers[0])))
+        header_buffer.extend(struct.pack('<I', 0x40 + len(sch_buffers[0])))
+        header_buffer.extend(struct.pack('<I', len(sch_buffers[1])))
+        header_buffer = pad_buffer_to_alignment(header_buffer, 0x10)
+        header_buffer.extend(b'\x00' * 32)
+
+        with open(file_path, 'wb') as f:
+            f.write(header_buffer)
+            for sch_buffer in sch_buffers:
+                f.write(sch_buffer)
+
+        self.report({'INFO'}, f"Exported {len(selected_meshes)} meshes to {file_path}")
+        return {'FINISHED'}
+
+
 def menu_func_import(self, context):
     self.layout.operator(ImportCollisionFile.bl_idname, text="MH Tri Collision (.sch)")
+    self.layout.operator(ImportCollisionArchive.bl_idname, text="MH Tri Collision Archive (.bin)")
 
 def menu_func_export(self, context):
     self.layout.operator(ExportCollisionFile.bl_idname, text="MH Tri Collision (.sch)")
+    self.layout.operator(ExportCollisionArchive.bl_idname, text="MH Tri Collision Archive (.bin)")
 
 classes = (
     MHTRI_OT_ColorizeByAttribute,
@@ -534,7 +705,9 @@ classes = (
     MHTRI_OT_CopyAttributesFromActive,
     MHTRI_PT_CollisionPanel,
     ImportCollisionFile,
+    ImportCollisionArchive,
     ExportCollisionFile,
+    ExportCollisionArchive,
 )
 
 def register():
