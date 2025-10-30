@@ -551,8 +551,8 @@ class ImportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ImportHelpe
         for i, sch_data in enumerate(sch_buffers):
             polygons = sch_to_polygons(sch_data)
             print(f"Importing collision mesh {i} with {len(polygons)} polygons.")
-            mesh = polygons_to_mesh(polygons, mesh_name=f"MH_Tri_Collision_{'Wall' if i == 0 else 'Floor'}")
-            obj = bpy.data.objects.new(f"MH_Tri_Collision_{'Wall' if i == 0 else 'Floor'}", mesh)
+            mesh = polygons_to_mesh(polygons, mesh_name=f"MH_Tri_Collision_{i}")
+            obj = bpy.data.objects.new(f"MH_Tri_Collision_{i}", mesh)
             context.collection.objects.link(obj)
             maya_to_blender_transform(obj)
         return {'FINISHED'}
@@ -642,28 +642,13 @@ class ExportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ExportHelpe
         
         return items
     
-    wall_object: bpy.props.EnumProperty(
-        name="Wall Mesh Object",
-        description="Select the wall mesh object to export",
-        items=get_mesh_objects,
-    ) # type: ignore
-
-    floor_object: bpy.props.EnumProperty(
-        name="Floor Mesh Object",
-        description="Select the floor mesh object to export",
-        items=get_mesh_objects,
-    ) # type: ignore
-
     def execute(self, context):
         file_path = self.filepath
         
         selected_meshes = []
-        for obj_name in [self.wall_object, self.floor_object]:
-            obj = bpy.data.objects.get(obj_name)
-            if not obj or obj.type != 'MESH':
-                self.report({'ERROR'}, f"Selected object {obj_name} is not a valid mesh.")
-                return {'CANCELLED'}
-            selected_meshes.append(obj.data)
+        for obj in sorted(bpy.data.objects, key=lambda o: o.name):
+            if obj.type == 'MESH':
+                selected_meshes.append(obj.data)
 
         sch_buffers = []
         for mesh in selected_meshes:
@@ -675,13 +660,18 @@ class ExportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ExportHelpe
 
         header_buffer = bytearray()
         header_buffer.extend(struct.pack('<I', len(sch_buffers)))
-        header_buffer.extend(struct.pack('<I', 0x40))
-        header_buffer.extend(struct.pack('<I', len(sch_buffers[0])))
-        header_buffer.extend(struct.pack('<I', 0x40 + len(sch_buffers[0])))
-        header_buffer.extend(struct.pack('<I', len(sch_buffers[1])))
+        for _ in range(len(sch_buffers)):
+            header_buffer.extend(struct.pack('<I', 0))
+            header_buffer.extend(struct.pack('<I', 0))
         header_buffer = pad_buffer_to_alignment(header_buffer, 0x10)
         header_buffer.extend(b'\x00' * 32)
 
+        current_offset = len(header_buffer)
+        for i, sch_buffer in enumerate(sch_buffers):
+            header_buffer[4 + i * 8: 8 + i * 8] = struct.pack('<I', current_offset)
+            header_buffer[8 + i * 8: 12 + i * 8] = struct.pack('<I', len(sch_buffer))
+            current_offset += len(sch_buffer)
+        
         with open(file_path, 'wb') as f:
             f.write(header_buffer)
             for sch_buffer in sch_buffers:
