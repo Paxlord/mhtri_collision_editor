@@ -430,24 +430,52 @@ def schfile_to_buffer(sch_file: SchFile) -> bytearray:
     sch_buffer.extend(polygon_buffer)
     return sch_buffer
 
-class MHTRI_OT_ColorizeByAttribute(bpy.types.Operator):
-    bl_idname = "mhtri.colorize_by_attribute"
-    bl_label = "Colorize by Attribute"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    attribute: bpy.props.StringProperty(name="Attribute") # type: ignore
-
-    def execute(self, context):
-        obj = context.active_object
-        return {'FINISHED'}
-
-
 class MHTRI_OT_PaintAttribute(bpy.types.Operator):
     bl_idname = "mhtri.paint_attribute"
     bl_label = "Paint Attribute to Selection"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH' or obj.mode != 'EDIT':
+            self.report({'WARNING'}, "Must be in Edit Mode with a mesh selected")
+            return {'CANCELLED'}
+        
+        scene = context.scene
+        mesh = bmesh.from_edit_mesh(obj.data)
+        
+        poly_id_layer = mesh.faces.layers.int.get("polyId")
+        attrib1_layer = mesh.faces.layers.int.get("attrib1")
+        flags_layer = mesh.faces.layers.int.get("flags")
+        attrib2_layer = mesh.faces.layers.int.get("attrib2")
+        attrib3_layer = mesh.faces.layers.int.get("attrib3")
+        
+        if poly_id_layer is None:
+            poly_id_layer = mesh.faces.layers.int.new("polyId")
+        if attrib1_layer is None:
+            attrib1_layer = mesh.faces.layers.int.new("attrib1")
+        if flags_layer is None:
+            flags_layer = mesh.faces.layers.int.new("flags")
+        if attrib2_layer is None:
+            attrib2_layer = mesh.faces.layers.int.new("attrib2")
+        if attrib3_layer is None:
+            attrib3_layer = mesh.faces.layers.int.new("attrib3")
+        
+        selected_faces = [f for f in mesh.faces if f.select]
+        
+        if not selected_faces:
+            self.report({'WARNING'}, "No faces selected")
+            return {'CANCELLED'}
+        
+        for face in selected_faces:
+            face[poly_id_layer] = scene.mhtri_paint_polyid
+            face[attrib1_layer] = scene.mhtri_paint_attrib1
+            face[flags_layer] = scene.mhtri_paint_flags
+            face[attrib2_layer] = scene.mhtri_paint_attrib2
+            face[attrib3_layer] = scene.mhtri_paint_attrib3
+        
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, f"Painted attributes to {len(selected_faces)} face(s)")
         return {'FINISHED'}
 
 
@@ -457,8 +485,37 @@ class MHTRI_OT_CopyAttributesFromActive(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH' or obj.mode != 'EDIT':
+            self.report({'WARNING'}, "Must be in Edit Mode with a mesh selected")
+            return {'CANCELLED'}
+        
+        scene = context.scene
+        mesh = bmesh.from_edit_mesh(obj.data)
+        
+        active_face = mesh.faces.active
+        if not active_face:
+            self.report({'WARNING'}, "No active face")
+            return {'CANCELLED'}
+        
+        poly_id_layer = mesh.faces.layers.int.get("polyId")
+        attrib1_layer = mesh.faces.layers.int.get("attrib1")
+        flags_layer = mesh.faces.layers.int.get("flags")
+        attrib2_layer = mesh.faces.layers.int.get("attrib2")
+        attrib3_layer = mesh.faces.layers.int.get("attrib3")
+        
+        if not all([poly_id_layer, attrib1_layer, flags_layer, attrib2_layer, attrib3_layer]):
+            self.report({'WARNING'}, "Attribute layers not found on mesh")
+            return {'CANCELLED'}
+        
+        scene.mhtri_paint_polyid = active_face[poly_id_layer]
+        scene.mhtri_paint_attrib1 = active_face[attrib1_layer]
+        scene.mhtri_paint_flags = active_face[flags_layer]
+        scene.mhtri_paint_attrib2 = active_face[attrib2_layer]
+        scene.mhtri_paint_attrib3 = active_face[attrib3_layer]
+        
+        self.report({'INFO'}, f"Copied attributes from face {active_face.index}")
         return {'FINISHED'}
-
 
 class MHTRI_PT_CollisionPanel(bpy.types.Panel):
     bl_label = "MH Tri Collision"
@@ -470,31 +527,59 @@ class MHTRI_PT_CollisionPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         obj = context.active_object
+        scene = context.scene
 
-        mesh = bmesh.from_edit_mesh(obj.data) if obj and obj.mode == 'EDIT' else None
-        if mesh:
-            selected_faces = [f for f in mesh.faces if f.select]
-            if selected_faces and len(selected_faces) == 1:
-                face = selected_faces[0]
+        if not (obj and obj.type == 'MESH' and obj.mode == 'EDIT'):
+            layout.label(text="Enter Edit Mode with a mesh")
+            return
 
-                poly_id_layer = mesh.faces.layers.int.get("polyId")
-                attrib1_layer = mesh.faces.layers.int.get("attrib1")
-                flags_layer = mesh.faces.layers.int.get("flags")
-                attrib2_layer = mesh.faces.layers.int.get("attrib2")
-                attrib3_layer = mesh.faces.layers.int.get("attrib3")
+        mesh = bmesh.from_edit_mesh(obj.data)
+        
+        poly_id_layer = mesh.faces.layers.int.get("polyId")
+        attrib1_layer = mesh.faces.layers.int.get("attrib1")
+        flags_layer = mesh.faces.layers.int.get("flags")
+        attrib2_layer = mesh.faces.layers.int.get("attrib2")
+        attrib3_layer = mesh.faces.layers.int.get("attrib3")
 
-                layout.label(text=f"Selected Face ID: {face.index}")
-                layout.label(text=f"polyId: {face[poly_id_layer]}")
-                layout.label(text=f"attrib1: {face[attrib1_layer]}")
-                layout.label(text=f"flags: {face[flags_layer]}")
-                layout.label(text=f"attrib2: {face[attrib2_layer]}")
-                layout.label(text=f"attrib3: {face[attrib3_layer]}")
+        selected_faces = [f for f in mesh.faces if f.select]
+        active_face = mesh.faces.active
+        
+        if active_face and active_face.select:
+            box = layout.box()
+            box.label(text=f"Active Face (Index: {active_face.index})", icon='FACESEL')
+            
+            if all([poly_id_layer, attrib1_layer, flags_layer, attrib2_layer, attrib3_layer]):
+                col = box.column(align=True)
+                col.label(text=f"polyId: {active_face[poly_id_layer]}")
+                col.label(text=f"attrib1: {active_face[attrib1_layer]}")
+                col.label(text=f"flags: {active_face[flags_layer]}")
+                col.label(text=f"attrib2: {active_face[attrib2_layer]}")
+                col.label(text=f"attrib3: {active_face[attrib3_layer]}")
+                
+                box.operator("mhtri.copy_attributes_from_active", icon='COPYDOWN')
+            else:
+                box.label(text="No attributes found", icon='ERROR')
 
-                bmesh.update_edit_mesh(obj.data)
-                return
+        layout.separator()
 
-        layout.label(text="No face selected or not in edit mode.")
-
+        paint_box = layout.box()
+        paint_box.label(text="Paint Attributes", icon='BRUSH_DATA')
+        
+        col = paint_box.column(align=True)
+        col.prop(scene, "mhtri_paint_polyid", text="polyId")
+        col.prop(scene, "mhtri_paint_attrib1", text="attrib1")
+        col.prop(scene, "mhtri_paint_flags", text="flags")
+        col.prop(scene, "mhtri_paint_attrib2", text="attrib2")
+        col.prop(scene, "mhtri_paint_attrib3", text="attrib3")
+        
+        if selected_faces:
+            paint_box.operator("mhtri.paint_attribute", 
+                             text=f"Paint to {len(selected_faces)} Face(s)", 
+                             icon='CHECKMARK')
+        else:
+            row = paint_box.row()
+            row.enabled = False
+            row.operator("mhtri.paint_attribute", text="Select Faces to Paint", icon='INFO')
 
 class ImportCollisionFile(bpy.types.Operator, bpy_extras.io_utils.ImportHelper):
     bl_idname = "import_scene.mhtri_collision"
@@ -691,7 +776,6 @@ def menu_func_export(self, context):
     self.layout.operator(ExportCollisionArchive.bl_idname, text="MH Tri Collision Archive (.bin)")
 
 classes = (
-    MHTRI_OT_ColorizeByAttribute,
     MHTRI_OT_PaintAttribute,
     MHTRI_OT_CopyAttributesFromActive,
     MHTRI_PT_CollisionPanel,
@@ -704,6 +788,41 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.mhtri_paint_polyid = bpy.props.IntProperty(
+        name="polyId",
+        description="Polygon ID to paint",
+        default=0,
+        min=0,
+        max=255
+    )
+    bpy.types.Scene.mhtri_paint_attrib1 = bpy.props.IntProperty(
+        name="attrib1",
+        description="Attribute 1 to paint",
+        default=0,
+        min=0,
+        max=255
+    )
+    bpy.types.Scene.mhtri_paint_flags = bpy.props.IntProperty(
+        name="flags",
+        description="Flags to paint",
+        default=0,
+        min=0,
+        max=65535
+    )
+    bpy.types.Scene.mhtri_paint_attrib2 = bpy.props.IntProperty(
+        name="attrib2",
+        description="Attribute 2 to paint",
+        default=0,
+        min=0,
+        max=65535
+    )
+    bpy.types.Scene.mhtri_paint_attrib3 = bpy.props.IntProperty(
+        name="attrib3",
+        description="Attribute 3 to paint",
+        default=0,
+        min=0,
+        max=65535
+    )
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
@@ -711,5 +830,10 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.mhtri_paint_polyid
+    del bpy.types.Scene.mhtri_paint_attrib1
+    del bpy.types.Scene.mhtri_paint_flags
+    del bpy.types.Scene.mhtri_paint_attrib2
+    del bpy.types.Scene.mhtri_paint_attrib3
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
