@@ -144,32 +144,71 @@ def maya_to_blender_transform(obj: bpy.types.Object):
 
 def mesh_to_sch_polygons(mesh: bpy.types.Mesh) -> list[SchPolygons]:
     polygons = []
+    
     poly_id_layer = mesh.attributes.get("polyId")
     attrib1_layer = mesh.attributes.get("attrib1")
     flags_layer = mesh.attributes.get("flags")
     attrib2_layer = mesh.attributes.get("attrib2")
     attrib3_layer = mesh.attributes.get("attrib3")
+    
+    has_valid_attributes = (
+        poly_id_layer and poly_id_layer.domain == 'FACE' and 
+        len(poly_id_layer.data) == len(mesh.polygons)
+    )
+    
+    if has_valid_attributes:
+        for poly in mesh.polygons:
+            v1 = mesh.vertices[poly.vertices[0]].co
+            v2 = mesh.vertices[poly.vertices[1]].co
+            v3 = mesh.vertices[poly.vertices[2]].co
+            normal = poly.normal
+            distance = -normal.dot(v1)
 
-    for poly in mesh.polygons:
-        v1 = mesh.vertices[poly.vertices[0]].co
-        v2 = mesh.vertices[poly.vertices[1]].co
-        v3 = mesh.vertices[poly.vertices[2]].co
-        normal = poly.normal
-        distance = -normal.dot(v1)
-
-        polygon = SchPolygons(
-            polyId=poly_id_layer.data[poly.index].value if poly_id_layer else 0,
-            attrib1=attrib1_layer.data[poly.index].value if attrib1_layer else 0,
-            flags=flags_layer.data[poly.index].value if flags_layer else 0,
-            attrib2=attrib2_layer.data[poly.index].value if attrib2_layer else 0,
-            attrib3=attrib3_layer.data[poly.index].value if attrib3_layer else 0,
-            vertex1=(v1.x, v1.y, v1.z),
-            vertex2=(v2.x, v2.y, v2.z),
-            vertex3=(v3.x, v3.y, v3.z),
-            normal=(normal.x, normal.y, normal.z),
-            distance=distance
-        )
-        polygons.append(polygon)
+            polygon = SchPolygons(
+                polyId=poly_id_layer.data[poly.index].value if poly_id_layer else 0,
+                attrib1=attrib1_layer.data[poly.index].value if attrib1_layer else 0,
+                flags=flags_layer.data[poly.index].value if flags_layer else 0,
+                attrib2=attrib2_layer.data[poly.index].value if attrib2_layer else 0,
+                attrib3=attrib3_layer.data[poly.index].value if attrib3_layer else 0,
+                vertex1=(v1.x, v1.y, v1.z),
+                vertex2=(v2.x, v2.y, v2.z),
+                vertex3=(v3.x, v3.y, v3.z),
+                normal=(normal.x, normal.y, normal.z),
+                distance=distance
+            )
+            polygons.append(polygon)
+    else:
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        
+        poly_id_bm = bm.faces.layers.int.get("polyId")
+        attrib1_bm = bm.faces.layers.int.get("attrib1")
+        flags_bm = bm.faces.layers.int.get("flags")
+        attrib2_bm = bm.faces.layers.int.get("attrib2")
+        attrib3_bm = bm.faces.layers.int.get("attrib3")
+        
+        for face in bm.faces:
+            verts = [v.co for v in face.verts]
+            v1, v2, v3 = verts[0], verts[1], verts[2]
+            normal = face.normal
+            distance = -normal.dot(v1)
+            
+            polygon = SchPolygons(
+                polyId=face[poly_id_bm] if poly_id_bm else 0,
+                attrib1=face[attrib1_bm] if attrib1_bm else 0,
+                flags=face[flags_bm] if flags_bm else 0,
+                attrib2=face[attrib2_bm] if attrib2_bm else 0,
+                attrib3=face[attrib3_bm] if attrib3_bm else 0,
+                vertex1=(v1.x, v1.y, v1.z),
+                vertex2=(v2.x, v2.y, v2.z),
+                vertex3=(v3.x, v3.y, v3.z),
+                normal=(normal.x, normal.y, normal.z),
+                distance=distance
+            )
+            polygons.append(polygon)
+        
+        bm.free()
+    
     return polygons
 
 def get_mesh_bounding_box(mesh: bpy.types.Mesh) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -478,7 +517,6 @@ class MHTRI_OT_PaintAttribute(bpy.types.Operator):
         self.report({'INFO'}, f"Painted attributes to {len(selected_faces)} face(s)")
         return {'FINISHED'}
 
-
 class MHTRI_OT_CopyAttributesFromActive(bpy.types.Operator):
     bl_idname = "mhtri.copy_attributes_from_active"
     bl_label = "Copy from Active Face"
@@ -766,7 +804,6 @@ class ExportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ExportHelpe
         self.report({'INFO'}, f"Exported {len(selected_meshes)} meshes to {file_path}")
         return {'FINISHED'}
 
-
 def menu_func_import(self, context):
     self.layout.operator(ImportCollisionFile.bl_idname, text="MH Tri Collision (.sch)")
     self.layout.operator(ImportCollisionArchive.bl_idname, text="MH Tri Collision Archive (.bin)")
@@ -825,7 +862,6 @@ def register():
     )
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
-
 
 def unregister():
     for cls in reversed(classes):
