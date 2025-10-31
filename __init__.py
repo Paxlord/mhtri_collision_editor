@@ -551,8 +551,9 @@ class ImportCollisionArchive(bpy.types.Operator, bpy_extras.io_utils.ImportHelpe
         for i, sch_data in enumerate(sch_buffers):
             polygons = sch_to_polygons(sch_data)
             print(f"Importing collision mesh {i} with {len(polygons)} polygons.")
-            mesh = polygons_to_mesh(polygons, mesh_name=f"MH_Tri_Collision_{i}")
-            obj = bpy.data.objects.new(f"MH_Tri_Collision_{i}", mesh)
+            padded_index = str(i).zfill(2)
+            mesh = polygons_to_mesh(polygons, mesh_name=f"{padded_index}_MH_Tri_Collision")
+            obj = bpy.data.objects.new(f"{padded_index}_MH_Tri_Collision", mesh)
             context.collection.objects.link(obj)
             maya_to_blender_transform(obj)
         return {'FINISHED'}
