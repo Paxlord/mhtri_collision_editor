@@ -11,7 +11,9 @@ The collision system uses a spatial grid structure where triangular polygons are
 ## Features
 
 - Import .sch collision files as Blender meshes
+- Import .bin collision archive files as multiple Blender meshes
 - Export Blender meshes to .sch format
+- Export Blender meshes to .bin archive format
 - View and edit polygon attributes per face
 - Configurable grid cell size on export
 - Preserves polygon metadata including polyId, flags, and custom attributes
