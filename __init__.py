@@ -676,9 +676,28 @@ class MHTRI_OT_CopyAttributesFromActive(bpy.types.Operator):
         
         scene.mhtri_paint_polyid = active_face[poly_id_layer]
         scene.mhtri_paint_attrib1 = active_face[attrib1_layer]
-        scene.mhtri_paint_flags = active_face[flags_layer]
         scene.mhtri_paint_attrib2 = active_face[attrib2_layer]
         scene.mhtri_paint_attrib3 = active_face[attrib3_layer]
+        
+        flag_val = active_face[flags_layer]
+        scene.mhtri_paint_flags = flag_val
+        
+        scene.mhtri_flag_01 = bool(flag_val & 0x01)
+        scene.mhtri_flag_02 = bool(flag_val & 0x02)
+        scene.mhtri_flag_04 = bool(flag_val & 0x04)
+        scene.mhtri_flag_08 = bool(flag_val & 0x08)
+        scene.mhtri_flag_10 = bool(flag_val & 0x10)
+        scene.mhtri_flag_20 = bool(flag_val & 0x20)
+        scene.mhtri_flag_40 = bool(flag_val & 0x40)
+        scene.mhtri_flag_80 = bool(flag_val & 0x80)
+        scene.mhtri_flag_0100 = bool(flag_val & 0x0100)
+        scene.mhtri_flag_0200 = bool(flag_val & 0x0200)
+        scene.mhtri_flag_0400 = bool(flag_val & 0x0400)
+        scene.mhtri_flag_0800 = bool(flag_val & 0x0800)
+        scene.mhtri_flag_1000 = bool(flag_val & 0x1000)
+        scene.mhtri_flag_2000 = bool(flag_val & 0x2000)
+        scene.mhtri_flag_4000 = bool(flag_val & 0x4000)
+        scene.mhtri_flag_8000 = bool(flag_val & 0x8000)
         
         self.report({'INFO'}, f"Copied attributes from face {active_face.index}")
         return {'FINISHED'}
@@ -734,9 +753,33 @@ class MHTRI_PT_CollisionPanel(bpy.types.Panel):
         col = paint_box.column(align=True)
         col.prop(scene, "mhtri_paint_polyid", text="polyId")
         col.prop(scene, "mhtri_paint_attrib1", text="attrib1")
-        col.prop(scene, "mhtri_paint_flags", text="flags")
         col.prop(scene, "mhtri_paint_attrib2", text="attrib2")
         col.prop(scene, "mhtri_paint_attrib3", text="attrib3")
+        
+        layout.separator()
+        box_flags = paint_box.box()
+        box_flags.label(text=f"Flags (Hex: {scene.mhtri_paint_flags:02X})")
+        
+        grid = box_flags.grid_flow(row_major=True, columns=4, even_columns=True, even_rows=True)
+
+        grid.prop(scene, "mhtri_flag_01", text="Flag 0x01")
+        grid.prop(scene, "mhtri_flag_02", text="Flag 0x02")
+        grid.prop(scene, "mhtri_flag_04", text="Flag 0x04")
+        grid.prop(scene, "mhtri_flag_08", text="Flag 0x08")
+        grid.prop(scene, "mhtri_flag_10", text="Flag 0x10")
+        grid.prop(scene, "mhtri_flag_20", text="Flag 0x20")
+        grid.prop(scene, "mhtri_flag_40", text="Flag 0x40")
+        grid.prop(scene, "mhtri_flag_80", text="Flag 0x80")
+        grid.prop(scene, "mhtri_flag_0100", text="0x0100")
+        grid.prop(scene, "mhtri_flag_0200", text="0x0200")
+        grid.prop(scene, "mhtri_flag_0400", text="0x0400")
+        grid.prop(scene, "mhtri_flag_0800", text="0x0800")
+        grid.prop(scene, "mhtri_flag_1000", text="0x1000")
+        grid.prop(scene, "mhtri_flag_2000", text="0x2000")
+        grid.prop(scene, "mhtri_flag_4000", text="0x4000")
+        grid.prop(scene, "mhtri_flag_8000", text="0x8000")
+
+        layout.separator()
         
         if selected_faces:
             paint_box.operator("mhtri.paint_attribute", 
@@ -950,54 +993,85 @@ classes = (
     ExportCollisionArchive,
 )
 
+def update_flag_bitmask(self, context):
+    val = 0
+    if self.mhtri_flag_01: val |= 0x01
+    if self.mhtri_flag_02: val |= 0x02
+    if self.mhtri_flag_04: val |= 0x04
+    if self.mhtri_flag_08: val |= 0x08
+    if self.mhtri_flag_10: val |= 0x10
+    if self.mhtri_flag_20: val |= 0x20
+    if self.mhtri_flag_40: val |= 0x40
+    if self.mhtri_flag_80: val |= 0x80
+    if self.mhtri_flag_0100: val |= 0x100
+    if self.mhtri_flag_0200: val |= 0x200
+    if self.mhtri_flag_0400: val |= 0x400
+    if self.mhtri_flag_0800: val |= 0x800
+    if self.mhtri_flag_1000: val |= 0x1000
+    if self.mhtri_flag_2000: val |= 0x2000
+    if self.mhtri_flag_4000: val |= 0x4000
+    if self.mhtri_flag_8000: val |= 0x8000
+    
+    self.mhtri_paint_flags = val
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.mhtri_paint_polyid = bpy.props.IntProperty(
-        name="polyId",
-        description="Polygon ID to paint",
-        default=0,
-        min=0,
-        max=255
-    )
-    bpy.types.Scene.mhtri_paint_attrib1 = bpy.props.IntProperty(
-        name="attrib1",
-        description="Attribute 1 to paint",
-        default=0,
-        min=0,
-        max=255
-    )
-    bpy.types.Scene.mhtri_paint_flags = bpy.props.IntProperty(
-        name="flags",
-        description="Flags to paint",
-        default=0,
-        min=0,
-        max=65535
-    )
-    bpy.types.Scene.mhtri_paint_attrib2 = bpy.props.IntProperty(
-        name="attrib2",
-        description="Attribute 2 to paint",
-        default=0,
-        min=0,
-        max=65535
-    )
-    bpy.types.Scene.mhtri_paint_attrib3 = bpy.props.IntProperty(
-        name="attrib3",
-        description="Attribute 3 to paint",
-        default=0,
-        min=0,
-        max=65535
-    )
+        
+    bpy.types.Scene.mhtri_paint_polyid = bpy.props.IntProperty(name="polyId", default=0, min=0, max=255)
+    bpy.types.Scene.mhtri_paint_attrib1 = bpy.props.IntProperty(name="attrib1", default=0, min=0, max=255)
+    
+    bpy.types.Scene.mhtri_paint_flags = bpy.props.IntProperty(name="flags", default=0, min=0, max=65535)
+    
+    bpy.types.Scene.mhtri_paint_attrib2 = bpy.props.IntProperty(name="attrib2", default=0, min=0, max=65535)
+    bpy.types.Scene.mhtri_paint_attrib3 = bpy.props.IntProperty(name="attrib3", default=0, min=0, max=65535)
+
+    bpy.types.Scene.mhtri_flag_01 = bpy.props.BoolProperty(name="Flag 0x01", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_02 = bpy.props.BoolProperty(name="Flag 0x02", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_04 = bpy.props.BoolProperty(name="Flag 0x04", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_08 = bpy.props.BoolProperty(name="Flag 0x08", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_10 = bpy.props.BoolProperty(name="Flag 0x10", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_20 = bpy.props.BoolProperty(name="Flag 0x20", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_40 = bpy.props.BoolProperty(name="Flag 0x40", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_80 = bpy.props.BoolProperty(name="Flag 0x80", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_0100 = bpy.props.BoolProperty(name="Flag 0x0100", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_0200 = bpy.props.BoolProperty(name="Flag 0x0200", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_0400 = bpy.props.BoolProperty(name="Flag 0x0400", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_0800 = bpy.props.BoolProperty(name="Flag 0x0800", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_1000 = bpy.props.BoolProperty(name="Flag 0x1000", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_2000 = bpy.props.BoolProperty(name="Flag 0x2000", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_4000 = bpy.props.BoolProperty(name="Flag 0x4000", update=update_flag_bitmask)
+    bpy.types.Scene.mhtri_flag_8000 = bpy.props.BoolProperty(name="Flag 0x8000", update=update_flag_bitmask)
+
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    
     del bpy.types.Scene.mhtri_paint_polyid
     del bpy.types.Scene.mhtri_paint_attrib1
     del bpy.types.Scene.mhtri_paint_flags
     del bpy.types.Scene.mhtri_paint_attrib2
     del bpy.types.Scene.mhtri_paint_attrib3
+    
+    del bpy.types.Scene.mhtri_flag_01
+    del bpy.types.Scene.mhtri_flag_02
+    del bpy.types.Scene.mhtri_flag_04
+    del bpy.types.Scene.mhtri_flag_08
+    del bpy.types.Scene.mhtri_flag_10
+    del bpy.types.Scene.mhtri_flag_20
+    del bpy.types.Scene.mhtri_flag_40
+    del bpy.types.Scene.mhtri_flag_80
+    del bpy.types.Scene.mhtri_flag_0100
+    del bpy.types.Scene.mhtri_flag_0200
+    del bpy.types.Scene.mhtri_flag_0400
+    del bpy.types.Scene.mhtri_flag_0800
+    del bpy.types.Scene.mhtri_flag_1000
+    del bpy.types.Scene.mhtri_flag_2000
+    del bpy.types.Scene.mhtri_flag_4000
+    del bpy.types.Scene.mhtri_flag_8000
+    
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
