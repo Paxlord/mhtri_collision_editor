@@ -47,6 +47,17 @@ def pad_buffer_to_alignment(buffer: bytearray, alignment: int) -> bytearray:
     buffer.extend(b'\x00' * padding_needed)
     return buffer
 
+def world_to_grid_coord(pos: tuple[float, float, float], grid_min: tuple[float, float, float], cell_size: tuple[float, float, float], grid_res: tuple[int, int, int]) -> tuple[int, int, int]:
+    x = int((pos[0] - grid_min[0]) / cell_size[0])
+    y = int((pos[1] - grid_min[1]) / cell_size[1])
+    z = int((pos[2] - grid_min[2]) / cell_size[2])
+    
+    return (
+        max(0, min(x, grid_res[0] - 1)),
+        max(0, min(y, grid_res[1] - 1)),
+        max(0, min(z, grid_res[2] - 1))
+    )
+
 def extract_polygons_from_file(file_path: str) -> list[SchPolygons]:
     polygons = []
     with open(file_path, 'rb') as f:
@@ -338,30 +349,62 @@ def get_polygons_in_cell(polygons: list[SchPolygons], cell_coord: tuple[int, int
 def mesh_to_sch_file(mesh: bpy.types.Mesh, cell_size: tuple[float, float, float]) -> SchFile:
     bounding_min, bounding_max = get_mesh_bounding_box(mesh)
 
-    grid_resolution = (
-        math.ceil((bounding_max[0] - bounding_min[0]) / cell_size[0]),
-        math.ceil((bounding_max[1] - bounding_min[1]) / cell_size[1]),
-        math.ceil((bounding_max[2] - bounding_min[2]) / cell_size[2]),
-    )
+    grid_res_x = max(1, math.ceil((bounding_max[0] - bounding_min[0]) / cell_size[0]))
+    grid_res_y = max(1, math.ceil((bounding_max[1] - bounding_min[1]) / cell_size[1]))
+    grid_res_z = max(1, math.ceil((bounding_max[2] - bounding_min[2]) / cell_size[2]))
+    grid_resolution = (grid_res_x, grid_res_y, grid_res_z)
 
     polygons = mesh_to_sch_polygons(mesh)
 
-    grid_cell_offsets = []
-    grid_cells = []
-
     total_cells = grid_resolution[0] * grid_resolution[1] * grid_resolution[2]
-    for cell_index in range(total_cells):
-        cell_coord = grid_1d_index_to_3d(cell_index, grid_resolution)
-        cell_polygons = get_polygons_in_cell(polygons, cell_coord, cell_size, bounding_min)
+    cell_buckets = [[] for _ in range(total_cells)]
 
-        polygon_indices = [polygons.index(poly) * 60 for poly in cell_polygons]
+    def get_cell_index(gx, gy, gz):
+        return gx * (grid_res_y * grid_res_z) + gy * grid_res_z + gz
 
-        grid_cell = SchGridCell(
-            polygon_indices=polygon_indices,
-            terminator=0xFFFFFFFF
+    EPSILON = 0.02 
+
+    for i, poly in enumerate(polygons):
+        p_min_x = min(poly.vertex1[0], poly.vertex2[0], poly.vertex3[0])
+        p_min_y = min(poly.vertex1[1], poly.vertex2[1], poly.vertex3[1])
+        p_min_z = min(poly.vertex1[2], poly.vertex2[2], poly.vertex3[2])
+        
+        p_max_x = max(poly.vertex1[0], poly.vertex2[0], poly.vertex3[0])
+        p_max_y = max(poly.vertex1[1], poly.vertex2[1], poly.vertex3[1])
+        p_max_z = max(poly.vertex1[2], poly.vertex2[2], poly.vertex3[2])
+
+        start_x, start_y, start_z = world_to_grid_coord(
+            (p_min_x - EPSILON, p_min_y - EPSILON, p_min_z - EPSILON), 
+            bounding_min, cell_size, grid_resolution
         )
-        grid_cells.append(grid_cell)
-    
+        
+        end_x, end_y, end_z = world_to_grid_coord(
+            (p_max_x + EPSILON, p_max_y + EPSILON, p_max_z + EPSILON), 
+            bounding_min, cell_size, grid_resolution
+        )
+
+        for gx in range(start_x, end_x + 1):
+            for gy in range(start_y, end_y + 1):
+                for gz in range(start_z, end_z + 1):
+                    
+                    cell_min = (
+                        bounding_min[0] + gx * cell_size[0],
+                        bounding_min[1] + gy * cell_size[1],
+                        bounding_min[2] + gz * cell_size[2],
+                    )
+                    
+                    if triangle_intersects_aabb_optimized(poly, cell_min, cell_size):
+                        flat_index = get_cell_index(gx, gy, gz)
+                        cell_buckets[flat_index].append(i * 60)
+
+    grid_cells = []
+    for bucket in cell_buckets:
+        grid_cells.append(SchGridCell(
+            polygon_indices=bucket,
+            terminator=0xFFFFFFFF
+        ))
+
+    grid_cell_offsets = []
     base_offset = 0x40 + total_cells * 4 - 4 
     current_offset = base_offset
     
@@ -390,6 +433,91 @@ def mesh_to_sch_file(mesh: bpy.types.Mesh, cell_size: tuple[float, float, float]
     )
 
     return sch_file
+
+def triangle_intersects_aabb_optimized(poly, cell_min, cell_size):
+    cell_max = (
+        cell_min[0] + cell_size[0],
+        cell_min[1] + cell_size[1],
+        cell_min[2] + cell_size[2]
+    )
+    
+    EPSILON = 0.02
+
+    v0, v1, v2 = poly.vertex1, poly.vertex2, poly.vertex3
+    normal = poly.normal
+
+    def dot_product(a, b): return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+    tri_min = (min(v0[0], v1[0], v2[0]), min(v0[1], v1[1], v2[1]), min(v0[2], v1[2], v2[2]))
+    tri_max = (max(v0[0], v1[0], v2[0]), max(v0[1], v1[1], v2[1]), max(v0[2], v1[2], v2[2]))
+    
+    if (tri_max[0] < cell_min[0] - EPSILON or tri_min[0] > cell_max[0] + EPSILON or
+        tri_max[1] < cell_min[1] - EPSILON or tri_min[1] > cell_max[1] + EPSILON or
+        tri_max[2] < cell_min[2] - EPSILON or tri_min[2] > cell_max[2] + EPSILON):
+        return False
+
+    edge0 = (v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2])
+    edge1 = (v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2])
+    edge2 = (v0[0] - v2[0], v0[1] - v2[1], v0[2] - v2[2])
+    
+    p = cell_min
+    dp = (cell_max[0] - cell_min[0], cell_max[1] - cell_min[1], cell_max[2] - cell_min[2])
+    
+    c = (
+        dp[0] if normal[0] > 0.0 else 0.0,
+        dp[1] if normal[1] > 0.0 else 0.0,
+        dp[2] if normal[2] > 0.0 else 0.0
+    )
+    
+    d1 = dot_product(normal, (c[0] - v0[0], c[1] - v0[1], c[2] - v0[2]))
+    d2 = dot_product(normal, (dp[0] - c[0] - v0[0], dp[1] - c[1] - v0[1], dp[2] - c[2] - v0[2]))
+    
+    if (dot_product(normal, p) + d1) * (dot_product(normal, p) + d2) > EPSILON:
+        return False
+
+    xym = -1.0 if normal[2] < 0.0 else 1.0
+    ne0xy = (-edge0[1] * xym, edge0[0] * xym)
+    ne1xy = (-edge1[1] * xym, edge1[0] * xym)
+    ne2xy = (-edge2[1] * xym, edge2[0] * xym)
+    
+    de0xy = -(ne0xy[0] * v0[0] + ne0xy[1] * v0[1]) + max(0.0, dp[0] * ne0xy[0]) + max(0.0, dp[1] * ne0xy[1])
+    de1xy = -(ne1xy[0] * v1[0] + ne1xy[1] * v1[1]) + max(0.0, dp[0] * ne1xy[0]) + max(0.0, dp[1] * ne1xy[1])
+    de2xy = -(ne2xy[0] * v2[0] + ne2xy[1] * v2[1]) + max(0.0, dp[0] * ne2xy[0]) + max(0.0, dp[1] * ne2xy[1])
+    
+    if ((ne0xy[0] * p[0] + ne0xy[1] * p[1]) + de0xy < -EPSILON or
+        (ne1xy[0] * p[0] + ne1xy[1] * p[1]) + de1xy < -EPSILON or
+        (ne2xy[0] * p[0] + ne2xy[1] * p[1]) + de2xy < -EPSILON):
+        return False
+        
+    yzm = -1.0 if normal[0] < 0.0 else 1.0
+    ne0yz = (-edge0[2] * yzm, edge0[1] * yzm)
+    ne1yz = (-edge1[2] * yzm, edge1[1] * yzm)
+    ne2yz = (-edge2[2] * yzm, edge2[1] * yzm)
+    
+    de0yz = -(ne0yz[0] * v0[1] + ne0yz[1] * v0[2]) + max(0.0, dp[1] * ne0yz[0]) + max(0.0, dp[2] * ne0yz[1])
+    de1yz = -(ne1yz[0] * v1[1] + ne1yz[1] * v1[2]) + max(0.0, dp[1] * ne1yz[0]) + max(0.0, dp[2] * ne1yz[1])
+    de2yz = -(ne2yz[0] * v2[1] + ne2yz[1] * v2[2]) + max(0.0, dp[1] * ne2yz[0]) + max(0.0, dp[2] * ne2yz[1])
+    
+    if ((ne0yz[0] * p[1] + ne0yz[1] * p[2]) + de0yz < -EPSILON or
+        (ne1yz[0] * p[1] + ne1yz[1] * p[2]) + de1yz < -EPSILON or
+        (ne2yz[0] * p[1] + ne2yz[1] * p[2]) + de2yz < -EPSILON):
+        return False
+    
+    zxm = -1.0 if normal[1] < 0.0 else 1.0
+    ne0zx = (-edge0[0] * zxm, edge0[2] * zxm)
+    ne1zx = (-edge1[0] * zxm, edge1[2] * zxm)
+    ne2zx = (-edge2[0] * zxm, edge2[2] * zxm)
+    
+    de0zx = -(ne0zx[0] * v0[2] + ne0zx[1] * v0[0]) + max(0.0, dp[2] * ne0zx[0]) + max(0.0, dp[0] * ne0zx[1])
+    de1zx = -(ne1zx[0] * v1[2] + ne1zx[1] * v1[0]) + max(0.0, dp[2] * ne1zx[0]) + max(0.0, dp[0] * ne1zx[1])
+    de2zx = -(ne2zx[0] * v2[2] + ne2zx[1] * v2[0]) + max(0.0, dp[2] * ne2zx[0]) + max(0.0, dp[0] * ne2zx[1])
+    
+    if ((ne0zx[0] * p[2] + ne0zx[1] * p[0]) + de0zx < -EPSILON or
+        (ne1zx[0] * p[2] + ne1zx[1] * p[0]) + de1zx < -EPSILON or
+        (ne2zx[0] * p[2] + ne2zx[1] * p[0]) + de2zx < -EPSILON):
+        return False
+
+    return True
 
 def polygons_to_bytes(polygons: list[SchPolygons]) -> bytes:
     data = bytearray()
